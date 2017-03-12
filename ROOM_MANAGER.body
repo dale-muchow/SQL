@@ -1,0 +1,426 @@
+CREATE OR REPLACE PACKAGE BODY DALE_COMMON.ROOM_MANAGER AS
+
+	TYPE TBL_YEAR_LIST IS TABLE OF VARCHAR2(4) INDEX BY BINARY_INTEGER;
+
+	--**********************************************
+
+	PROCEDURE INIT_NEW_ROOM_PRIV(userId   IN NUMBER,
+																 roomId IN NUMBER,
+																 openYear IN VARCHAR2) IS
+		tblYear TBL_YEAR_LIST;
+		i       INTEGER;
+	BEGIN
+	
+		SELECT CPY_ROOM_YEAR
+			BULK COLLECT
+			INTO tblYear
+			FROM ROOM_BASE.CS_ROOM_YEARS
+		 WHERE SYSDATE >= CPY_AVAILABLE_DATE
+			 AND (openYear IS NULL OR CPY_ROOM_YEAR >= openYear);
+	
+		i := tblYear.FIRST;
+		LOOP
+			EXIT WHEN i IS NULL;
+			/*PROCEDURE UpdateUser_data_access(
+          inUSER_ID IN NUMBER,
+          inYEAR IN VARCHAR2,
+          inITEM_ID IN NUMBER,
+          inITEM_TYPE IN NUMBER,
+          inIS_PRIMARY IN VARCHAR2);
+      */
+			DATAACCESSPACKAGE.UPDATEUSER_DATA_ACCESS(userId,
+																							 tblYear(i),
+																							 roomId,
+																							 CONSTANTS.ITEM_TYPE_ROOM,
+																							 'N',
+																							 'N');
+		
+			ROOM_BASE.USER_PRIVILEGE_UTILITY.INIT_USER_ROOM(userId,
+																											 CLIENT_PKG.GET_USER_NAME(userId),
+																											 tblYear(i));
+		
+			i := tblYear.NEXT(i);
+		END LOOP;
+	
+	END INIT_NEW_ROOM_PRIV;
+
+	--**********************************************
+
+	PROCEDURE GetRoomNames(nameCursor OUT ROOM_NAME_CUR)
+	IS
+	BEGIN
+		OPEN nameCursor FOR
+			SELECT
+				ROOM_ID,
+				NAME,
+				OPEN_YEAR,
+				CLOSE_YEAR,
+				TYPE_ID,
+				HOMEROOM_ROOM_ID
+			FROM DALECOMMON.ROOMS
+			ORDER BY ABBREVIATION;
+
+	END GetRoomNames;
+
+	--**********************************************
+
+	PROCEDURE GetChildIds(roomIds          IN IAS_JOIN.ID_LIST,
+													locAddressIds      OUT IAS_JOIN.ID_LIST,
+													mailAddressIds     OUT IAS_JOIN.ID_LIST,
+													localPhoneIds      OUT IAS_JOIN.ID_LIST,
+													tollFreePhoneIds   OUT IAS_JOIN.ID_LIST,
+													faxIds             OUT IAS_JOIN.ID_LIST,
+													emailIds           OUT IAS_JOIN.ID_LIST,
+													emergencyPhoneIds  OUT IAS_JOIN.ID_LIST) IS
+		roomRef IAS_REF_ID_TBL;
+	BEGIN
+	
+		roomRef := IAS_JOIN.MAKE_REF_ID_TBL(roomIds);
+	
+		SELECT rooms.LOCATION_ADDRESS_ID,
+					 rooms.MAIL_ADDRESS_ID,
+					 rooms.LOCAL_PHONE_ID,
+					 rooms.TOLL_FREE_PHONE_ID,
+					 rooms.FAX_ID,
+					 rooms.EMAIL_ID,
+					 rooms.EMERGENCY_PHONE_ID
+			BULK COLLECT
+			INTO locAddressIds,
+					 mailAddressIds,
+					 localPhoneIds,
+					 tollFreePhoneIds,
+					 faxIds,
+					 emailIds,
+					 emergencyPhoneIds
+			FROM roomS rooms
+			JOIN TABLE(CAST(roomRef AS IAS_REF_ID_TBL)) R
+				ON R.REF_ID = ROOM_ID;
+	
+	END GetChildIds;
+
+	--**********************************************
+
+	PROCEDURE GetChildCursors(roomIds     IN IAS_JOIN.ID_LIST,
+															addressCursor OUT ROOM_BASE.ROOM_MGR.CUR_ADDRESS,
+															phoneCursor   OUT ROOM_BASE.ROOM_MGR.CUR_PHONE,
+															emailCursor   OUT ROOM_BASE.ROOM_MGR.CUR_EMAIL) IS
+		locAddressIds      IAS_JOIN.ID_LIST;
+		mailAddressIds     IAS_JOIN.ID_LIST;
+		localPhoneIds      IAS_JOIN.ID_LIST;
+		tollFreePhoneIds   IAS_JOIN.ID_LIST;
+		faxIds             IAS_JOIN.ID_LIST;
+		emailIds           IAS_JOIN.ID_LIST;
+		emergencyPhoneIds IAS_JOIN.ID_LIST;
+	
+		allAddressIds IAS_JOIN.ID_LIST;
+		allPhoneIds   IAS_JOIN.ID_LIST;
+	BEGIN
+	
+		GetChildIds(roomIds,
+									locAddressIds,
+									mailAddressIds,
+									localPhoneIds,
+									tollFreePhoneIds,
+									faxIds,
+									emailIds,
+									EMERGENCYPhoneIds);
+	
+		IAS_JOIN.APPEND_TO_LIST(locAddressIds, allAddressIds);
+		IAS_JOIN.APPEND_TO_LIST(mailAddressIds, allAddressIds);
+		ROOM_BASE.ROOM_MGR.GET_ADDRESSES(IAS_JOIN.REMOVE_NULLS(allAddressIds),
+																					addressCursor);
+	
+		IAS_JOIN.APPEND_TO_LIST(localPhoneIds, allPhoneIds);
+		IAS_JOIN.APPEND_TO_LIST(tollFreePhoneIds, allPhoneIds);
+		IAS_JOIN.APPEND_TO_LIST(faxIds, allPhoneIds);
+		IAS_JOIN.APPEND_TO_LIST(emergencyPhoneIds , allPhoneIds);
+	
+		ROOM_BASE.ROOM_MGR.GET_PHONES(IAS_JOIN.REMOVE_NULLS(allPhoneIds),
+																			 phoneCursor);
+	
+		ROOM_BASE.ROOM_MGR.GET_EMAILS(IAS_JOIN.REMOVE_NULLS(emailIds),
+																			 emailCursor);
+	
+	END GetChildCursors;
+
+	--**********************************************
+
+	PROCEDURE Getroom(
+		roomId IN NUMBER,
+		roomCursor OUT ROOM_CUR,
+		addressCursor OUT ROOM_BASE.ROOM_MGR.CUR_ADDRESS,
+		phoneCursor OUT ROOM_BASE.ROOM_MGR.CUR_PHONE,
+		emailCursor OUT ROOM_BASE.ROOM_MGR.CUR_EMAIL)
+	IS
+
+     singleroom   IAS_JOIN.ID_LIST;
+	BEGIN
+
+    SELECT roomId
+      BULK COLLECT INTO singleroom
+    FROM DALECOMMON.ROOMS;
+
+		GetRooms(singleroom,roomCursor);
+		GetChildCursors(singleroom,addressCursor,phoneCursor,emailCursor);
+
+	END Getroom;
+
+	--**********************************************
+
+	PROCEDURE GetAllRooms(roomCursor  OUT ROOM_CUR,
+													addressCursor OUT ROOM_BASE.ROOM_MGR.CUR_ADDRESS,
+													phoneCursor   OUT ROOM_BASE.ROOM_MGR.CUR_PHONE,
+													emailCursor   OUT ROOM_BASE.ROOM_MGR.CUR_EMAIL)
+ IS
+		roomIds IAS_JOIN.ID_LIST;
+	BEGIN
+	
+		SELECT ROOM_ID BULK COLLECT INTO roomIds FROM DALECOMMON.ROOMS;
+	
+		GetRooms(roomIds, roomCursor);
+	
+		GetChildCursors(roomIds, addressCursor, phoneCursor, emailCursor);
+	
+	END GetAllRooms;
+
+
+	--**********************************************
+
+	PROCEDURE UpdateUsersPrimaryRoom(currentRoomId IN NUMBER,
+																		 newRoomId     IN NUMBER,
+																		 startYear       IN VARCHAR2) IS
+		roomYears TBL_YEAR_LIST;
+	BEGIN
+	
+		SELECT ROOM_YEAR
+			BULK COLLECT
+			INTO RoomYears
+			FROM ROOM_BASE.ROOM_YEARS
+		 WHERE AVAILABLE_DATE < SYSDATE
+			 AND (ROOM_YEAR >= startYear);
+	
+		FOR i IN ROOMYears.FIRST .. ROOMYears.LAST LOOP
+			DALECOMMON.COMMON_PKG.UpdateUsersPrimaryRoom(currentroomId,
+																														newroomId,
+																														ROoomYears(i));
+		END LOOP;
+	
+	END UpdateUsersPrimaryRoom;
+
+
+	--**********************************************
+
+	PROCEDURE GetTypeBPymtAcctNmbrs(
+		year in VARCHAR2,
+		roomId IN NUMBER,
+    typeBPymtAcctNbrsCursor OUT CUR_TYPE_PYMT_ACCT_NMBRS)
+	IS
+		sSql VARCHAR2(2000);
+    roomIDs IAS_JOIN.ID_LIST;
+    roomIDsRef IAS_REF_ID_TBL;
+  BEGIN
+
+		OPEN typeBPymtAcctNbrsCursor FOR
+				SELECT DISTINCT ROOM_ID ROOM_ID,
+                				PAYMENT_ID PAYMENT_ACCT_NUMBER 
+				FROM ROOM_BASE.ROOMS
+				WHERE ROOM_ID = roomId
+				AND YEAR = year
+				AND ROOM_TYPE = 'TYPEB';
+  END GetTypeBPymtAcctNmbrs
+
+	--**********************************************
+
+  PROCEDURE GetTypeARoomID(
+    typeBRoomID            IN NUMBER,
+		year in VARCHAR2,
+    typeCRoomID OUT NUMBER
+  )
+  IS
+    sSql VARCHAR2(2000);
+  BEGIN
+
+		sSql := 'SELECT ROOM_ID ';
+		sSql := sSql || '	FROM TPA' || SUBSTR(year,3,2) || 'COMMON.ASSIGNMENT TPAA ';    
+		sSql := sSql || ' INNER JOIN TPA' || SUBSTR(year,3,2) || '_ROOM.ROOM TPAR ';
+		sSql := sSql || ' ON TPAA.ROOM_ID = TPAR.ROOM_ID ';             
+		sSql := sSql || '	WHERE TPAA.TYPEB_ROOM_ID = :typeBroomID '; 
+		sSql := sSql || '	AND TPAR.ROOM_TYPE = ''E'' '; 
+		sSql := sSql || '	AND TPAR.STATUS IN (''OPEN'',''CLOSE'',''UNKNOWN'') '; 
+		EXECUTE IMMEDIATE(sSql) INTO typeAroomID USING typeBroomID; 
+ 		EXCEPTION
+			WHEN OTHERS THEN
+				NULL;
+  END GetTypeARoomID;
+
+	--**********************************************
+
+	PROCEDURE GetRoomTypeACount (
+		  year in VARCHAR2,
+			roomID IN NUMBER,
+			roomCount OUT NUMBER,
+			filterType IN VARCHAR2 DEFAULT NULL,
+			filterValue IN VARCHAR2 DEFAULT NULL
+	)
+	IS
+    sSql VARCHAR2(2000);
+	BEGIN
+
+		sSql := 'SELECT COUNT(DISTINCT ASSIGNMENT.HAS_ROOM_ID) ';		
+		sSql := sSql || 'FROM TPA' || SUBSTR(year,3,2) || 'COMMON.ASSIGNMENT ASSIGNMENT ';			 
+
+    IF filterType = DALECOMMON.CONSTANTS.OWNER THEN  -- Owner
+			sSql := sSql || 'WHERE ASSIGNMENT.HAS_OWNER = :filterValue AND '; 
+		ELSIF filterType = DALECOMMON.CONSTANTS.CODE THEN -- Room Code
+		  sSql := sSql || 'JOIN ROOM_BASE.ROOM ROOM ';
+		  sSql := sSql || 'ON ROOM.ROOM_ID = ASSIGNMENT.ROOM_ID ';
+			sSql := sSql || 'AND ROOM.RMS_ROOM_CODE = :filterValue ';
+			sSql := sSql || 'WHERE ';
+		ELSIF filterType = DALECOMMON.CONSTANTS.NUMBER THEN -- room Number
+			sSql := sSql || 'JOIN TPA' || SUBSTR(year,3,2) || '_ROOM.TYPEA_ROOM ROOM ';
+		  sSql := sSql || 'ON ROOM.ROOM_ID = ASSIGNMENT.ROOM_ID ';
+			sSql := sSql || 'AND ROOM.ROOM_NUMBER = :filterValue ';
+			sSql := sSql || 'WHERE ';
+		ELSIF filterType IS NOT NULL THEN
+			-- Unrecognized filterType - should not happen.
+			roomCount := 0;
+			RETURN;
+		END IF;
+
+    IF filterType IS NULL THEN
+			sSql := sSql || 'WHERE ASSIGNMENT.ROOM_ID = :roomID ';
+    ELSE
+			 sSql := sSql || ' ASSIGNMENT.ROOM_ID = :roomID ';
+    END IF;
+		
+		IF filterType IS NULL THEN
+			EXECUTE IMMEDIATE(sSql) INTO roomCount USING roomID; 
+	  ELSE
+			EXECUTE IMMEDIATE(sSql) INTO roomCount USING filterValue, roomID; 	
+		END IF; 		
+
+	END GetRoomTypeACount 
+
+	--**********************************************
+
+	PROCEDURE GetRoomTypeBCount (
+		  year in VARCHAR2,
+			roomID IN NUMBER,
+			roomCount OUT NUMBER,
+			filterType IN VARCHAR2 DEFAULT NULL,
+			filterValue IN VARCHAR2 DEFAULT NULL
+	)
+	IS
+    sSql VARCHAR2(2000);
+	BEGIN
+
+		sSql := 'SELECT COUNT(DISTINCT ASSIGNMENT.ROOM_ID) ';		
+		sSql := sSql || 'FROM MP' || SUBSTR(year,3,2) || 'COMMON.TPB_ASSIGNMENT ASSIGNMENT ';			 
+
+    IF filterType = DALECOMMON.CONSTANTS.OWNER THEN  -- Owner
+			sSql := sSql || 'WHERE ASSIGNMENT.ROOM_USER = :filterValue AND '; 
+		ELSIF filterType = DALECOMMON.CONSTANTS.CODE THEN -- Room Code
+		  sSql := sSql || 'JOIN ROOM_BASE.ROOM ROOM ';
+		  sSql := sSql || 'ON ROOM.RMS_ROOM_ID = ASSIGNMENT.ROOM_ID ';
+			sSql := sSql || 'AND ROOM.ROOM_CODE = :filterValue ';
+			sSql := sSql || 'WHERE ';
+		ELSIF filterType = DALECOMMON.CONSTANTS.NUMBER THEN -- room Number
+			sSql := sSql || 'JOIN TPB' || SUBSTR(year,3,2) || '_ROOM.TPB_ROOM ROOM ';
+		  sSql := sSql || 'ON ROOM.TPB_ROOM_ID = ASSIGNMENT.ROOM_ID ';
+			sSql := sSql || 'AND ROOM.TPB_ROOM_NUMBER = :filterValue ';
+			sSql := sSql || 'WHERE ';
+		ELSIF filterType IS NOT NULL THEN
+			-- Unrecognized filterType - should not happen.
+			roomCount := 0;
+			RETURN;
+		END IF;
+
+    IF filterType IS NULL THEN
+			sSql := sSql || 'WHERE ASSIGNMENT.ROOM_ID = :roomID ';
+    ELSE
+			 sSql := sSql || ' ASSIGNMENT.ROOM_ID = :roomID ';
+    END IF;
+		
+		IF filterType IS NULL THEN
+			EXECUTE IMMEDIATE(sSql) INTO roomCount USING roomID; 
+	  ELSE
+			EXECUTE IMMEDIATE(sSql) INTO roomCount USING filterValue, roomID; 	
+		END IF; 		
+
+	END GetRoomTypeBCount 
+
+	--**********************************************
+
+	PROCEDURE GetRoomTypeCCount (
+		  year in VARCHAR2,
+			roomID IN NUMBER,
+			roomCount OUT NUMBER,
+			filterType IN VARCHAR2 DEFAULT NULL,
+			filterValue IN VARCHAR2 DEFAULT NULL
+	)
+	IS
+    sSql VARCHAR2(2000);
+	BEGIN
+
+		sSql := 'SELECT COUNT(DISTINCT TYPEC_ROOM.ROOM_ID) ';		
+		sSql := sSql || 'FROM TYPEC' || SUBSTR(year,3,2) || '.ROOM TYPEC_ROOM ';			 
+
+    IF filterType = DALECOMMON.CONSTANTS.UNASSD THEN  -- Unassigned
+			sSql := sSql || 'WHERE LTYPEC_ROOM.ROOM_ID IS NULL AND '; 
+		ELSIF filterType = DALECOMMON.CONSTANTS.CODE THEN -- Room Code
+		  sSql := sSql || 'JOIN ROOM_BASE.CS_ROOM ROOM ';
+		  sSql := sSql || 'ON ROOM.RMS_ROOM_ID = LTYPEC_ROOM.ROOM_ID ';
+			sSql := sSql || 'AND ROOM.RMS_ROOM_CODE = :filterValue ';
+			sSql := sSql || 'WHERE ';
+		ELSIF filterType = DALECOMMON.CONSTANTS.NUMBER THEN -- room Number
+			sSql := sSql || 'WHERE TYPEC_ROOM.ROOM_NUMBER = :filterValue AND ';
+		ELSIF filterType IS NOT NULL THEN
+			-- Unrecognized filterType - should not happen.
+			roomCount := 0;
+			RETURN;
+		END IF;
+
+    IF filterType IS NULL THEN
+			sSql := sSql || 'WHERE TYPEC_ROOM.ROOM_ID = :roomID ';
+    ELSE
+			sSql := sSql || ' TYPEC_ROOM.ROOM_ID = :roomID ';
+    END IF;
+		
+		IF filterType IS NULL OR filterType = DALECOMMON.CONSTANTS.UNASSD THEN
+			EXECUTE IMMEDIATE(sSql) INTO roomCount USING roomID; 
+	  ELSE
+			EXECUTE IMMEDIATE(sSql) INTO roomCount USING filterValue, roomID; 	
+		END IF; 		
+
+	END GetRoomTypeCCount;
+
+	--**********************************************
+
+  PROCEDURE GetRooms(
+    reinsYear IN VARCHAR2,
+    userId IN NUMBER,
+    locationOnly IN VARCHAR2,
+    roomCursor OUT ROOM_CUR,
+    addressCursor OUT ROOM_BASE.ROOM_MGR.CUR_ADDRESS,
+    phoneCursor OUT ROOM_BASE.ROOM_MGR.CUR_PHONE,
+    emailCursor OUT ROOM_BASE.ROOM_MGR.CUR_EMAIL)
+    IS
+		    roomIds IAS_JOIN.ID_LIST;
+    BEGIN
+        SELECT DISTINCT rooms.ROOM_ID
+        BULK COLLECT INTO roomIds
+        FROM DALECOMMON.rooms rooms
+        LEFT JOIN ROOM_BASE.Priv_ROOM_Tbl roomPriv
+		        ON rooms.ROOM_ID = roomPriv.Priv_Id
+        WHERE (userId IS NULL OR roomPriv.Priv_User_Id = userId)
+        AND (reinsYear IS NULL OR (roomPriv.Priv_Year = reinsYear AND (rooms.close_year > reinsYear OR rooms.close_year IS NULL)))
+        AND (NVL(locationOnly, 'N') = 'N' OR rooms.HomeROOM_ROOM_id IS NULL);
+
+        Getrooms(roomIds,roomCursor);
+
+        GetChildCursors(roomIds,addressCursor,phoneCursor,emailCursor);
+
+	END GetRooms;
+
+end Room_MANAGER;
+/
